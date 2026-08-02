@@ -1,0 +1,6 @@
+.env
+models/
+.cache/
+*.log
+*.multipart
+response-*.json

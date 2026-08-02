@@ -1,0 +1,9 @@
+.git
+.github
+.cache
+.env
+models
+backups
+*.log
+*.multipart
+response-*.json

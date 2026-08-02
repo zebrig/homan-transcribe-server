@@ -1,0 +1,60 @@
+# syntax=docker/dockerfile:1.7
+
+ARG WHISPER_BASE=ghcr.io/ggml-org/whisper.cpp@sha256:0ae4f56c4ef3e499092fe0fb8cdc581c1270fd51e44e96978ec43b25137b8070
+
+FROM ${WHISPER_BASE} AS build
+
+USER root
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        cmake \
+        glslc \
+        libvulkan-dev \
+        spirv-headers \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+
+# server.cpp is derived from whisper.cpp/examples/server/server.cpp at the
+# digest pinned above. Keeping the complete patched source in this repository
+# makes the API and GPU-thread-affinity changes reviewable and reproducible.
+COPY server.cpp /app/examples/server/server.cpp
+
+RUN grep -Fq 'new httplib::ThreadPool(1)' /app/examples/server/server.cpp \
+    && grep -Fq 'homan_inference_path' /app/examples/server/server.cpp \
+    && grep -Fq 'pack_homan_batch_reels' /app/examples/server/server.cpp \
+    && grep -Fq 'whisper_full_with_state(' /app/examples/server/server.cpp \
+    && cmake -S /app -B /app/build-homan \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DGGML_VULKAN=ON \
+        -DGGML_NATIVE=OFF \
+        -DGGML_BMI2=OFF \
+        -DGGML_AVX=OFF \
+        -DGGML_AVX2=OFF \
+        -DGGML_FMA=OFF \
+        -DGGML_F16C=OFF \
+        -DWHISPER_BUILD_TESTS=OFF \
+        -DWHISPER_BUILD_EXAMPLES=ON \
+        -DWHISPER_BUILD_SERVER=ON \
+    && cmake --build /app/build-homan --target whisper-server --parallel 2
+
+FROM ubuntu:24.04 AS runtime
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        ffmpeg \
+        libvulkan1 \
+        mesa-vulkan-drivers \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+
+COPY --from=build /app/build-homan/bin/ /opt/whisper/bin/
+COPY LICENSE /usr/share/licenses/homan-transcribe-server/LICENSE
+
+ENV LD_LIBRARY_PATH=/opt/whisper/bin
+ENV PATH=/opt/whisper/bin:${PATH}
+
+WORKDIR /opt/whisper
+ENTRYPOINT ["/opt/whisper/bin/whisper-server"]

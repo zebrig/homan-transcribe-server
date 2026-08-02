@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "request_id": "homan-native-smoke",
+  "options": {
+    "concurrency": 1
+  },
+  "items": [
+    {
+      "id": "microphone-0000",
+      "source": "microphone",
+      "start": 0.0,
+      "end": 20.0,
+      "file": "audio_0000"
+    },
+    {
+      "id": "system-0000",
+      "source": "system",
+      "start": 20.0,
+      "end": 40.0,
+      "file": "audio_0001"
+    }
+  ]
+}

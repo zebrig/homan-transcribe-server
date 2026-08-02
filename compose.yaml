@@ -1,0 +1,105 @@
+name: ${COMPOSE_PROJECT_NAME:-homan-transcribe-server}
+
+services:
+  whisper:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    image: ${WHISPER_IMAGE:-homan-transcribe-server:local}
+    restart: unless-stopped
+    init: true
+    devices:
+      - /dev/dri:/dev/dri
+    environment:
+      RADV_PERFTEST: nogttspill
+      XDG_CACHE_HOME: /tmp/whisper/cache
+      TMPDIR: /tmp/whisper
+    command:
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --model
+      - /models/ggml-large-v3-turbo.bin
+      - --inference-path
+      - /v1/audio/transcriptions
+      - --homan-inference-path
+      - /v1/homan/audio/transcriptions
+      - --batch-max-concurrency
+      - "2"
+      - --batch-decode-concurrency
+      - "2"
+      - --batch-max-items
+      - "2048"
+      - --batch-fallback-repack-short
+      - --convert
+      - --tmp-dir
+      - /tmp/whisper
+      - --threads
+      - "2"
+      - --language
+      - auto
+      - --best-of
+      - "5"
+      - --beam-size
+      - "1"
+      - --no-language-probabilities
+      - --flash-attn
+    expose:
+      - "8080"
+    volumes:
+      - ./models/ggml-large-v3-turbo.bin:/models/ggml-large-v3-turbo.bin:ro
+      - whisper_tmp:/tmp/whisper
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: "5"
+
+  caddy:
+    image: caddy:2.11.4-alpine
+    restart: unless-stopped
+    depends_on:
+      whisper:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      CADDY_SITE_ADDRESS: ${CADDY_SITE_ADDRESS:-stt.example.com}
+      TRANSCRIBE_API_KEY: ${TRANSCRIBE_API_KEY:?set TRANSCRIBE_API_KEY in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    logging:
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: "5"
+
+volumes:
+  whisper_tmp:
+  caddy_data:
+  caddy_config:

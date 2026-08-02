@@ -1,0 +1,347 @@
+openapi: 3.1.0
+info:
+  title: Homan Transcribe Server
+  version: 1.0.0
+  description: >-
+    A fixed-model whisper.cpp service. It exposes a limited OpenAI-compatible
+    single-file route and a Homan-native multi-part batch route. Unknown and
+    unsupported request fields are intentionally ignored.
+servers:
+  - url: https://stt.example.com
+security:
+  - bearerAuth: []
+paths:
+  /healthz:
+    get:
+      summary: Caddy liveness check
+      security: []
+      responses:
+        "200":
+          description: Proxy is alive
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    const: ok
+  /v1/audio/transcriptions:
+    post:
+      summary: Conditionally OpenAI-compatible single-file transcription
+      description: >-
+        The server always uses its configured large-v3-turbo model. `model` is
+        accepted and ignored. Only `file`, `language`, `prompt`,
+        `response_format`, and `temperature` affect processing; all other
+        multipart fields are ignored. Streaming, hosted diarization, word
+        timestamps, logprobs, and model selection are not implemented.
+      externalDocs:
+        description: Official OpenAI endpoint whose basic request shape is emulated
+        url: https://developers.openai.com/api/reference/resources/audio/subresources/transcriptions/methods/create
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Audio decoded by FFmpeg.
+                model:
+                  type: string
+                  description: Accepted for client compatibility and ignored.
+                language:
+                  type: string
+                  description: Optional ISO-639-1 hint. Omit for automatic detection.
+                prompt:
+                  type: string
+                  maxLength: 4096
+                response_format:
+                  type: string
+                  enum: [json, text, srt, verbose_json, vtt]
+                  default: json
+                temperature:
+                  type: number
+                  minimum: 0
+                  maximum: 1
+      responses:
+        "200":
+          description: Transcription in the requested supported format
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/SimpleTranscription"
+                  - $ref: "#/components/schemas/VerboseTranscription"
+            text/plain:
+              schema:
+                type: string
+            application/x-subrip:
+              schema:
+                type: string
+            text/vtt:
+              schema:
+                type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "413":
+          $ref: "#/components/responses/TooLarge"
+        "500":
+          $ref: "#/components/responses/ServerError"
+  /v1/homan/audio/transcriptions:
+    post:
+      summary: Homan-native VAD batch transcription
+      description: >-
+        Receives a manifest and one compressed audio field for each VAD item.
+        The service preserves item IDs, source roles, and absolute source
+        timeline ranges. It detects language automatically, packs short clips
+        into approximately 30-second inference reels, and falls back to an
+        isolated item inference whenever a reel segment cannot be mapped safely.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [manifest]
+              properties:
+                manifest:
+                  type: string
+                  format: binary
+                  description: >-
+                    UTF-8 JSON matching api/homan-batch-manifest.schema.json.
+                    Each manifest.items[].file value names another multipart
+                    field containing that item's audio.
+              additionalProperties:
+                type: string
+                format: binary
+            encoding:
+              manifest:
+                contentType: application/json
+      responses:
+        "200":
+          description: Complete ordered batch result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HomanBatchResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "413":
+          $ref: "#/components/responses/TooLarge"
+        "500":
+          $ref: "#/components/responses/ServerError"
+        "503":
+          $ref: "#/components/responses/ServerError"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  responses:
+    BadRequest:
+      description: Invalid multipart body, manifest, audio, or supported field
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Unauthorized:
+      description: Missing or incorrect bearer token
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    TooLarge:
+      description: Request, batch, or item exceeds a configured limit
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    ServerError:
+      description: Conversion, model, or inference failure
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [message, type]
+          properties:
+            message:
+              type: string
+            type:
+              type: string
+    SimpleTranscription:
+      type: object
+      required: [text]
+      properties:
+        text:
+          type: string
+    VerboseTranscription:
+      type: object
+      required: [text, language, duration, segments]
+      properties:
+        text:
+          type: string
+        language:
+          type: string
+        duration:
+          type: number
+        segments:
+          type: array
+          items:
+            $ref: "#/components/schemas/TranscriptSegment"
+    TranscriptSegment:
+      type: object
+      required: [id, start, end, text]
+      properties:
+        id:
+          type: integer
+        start:
+          type: number
+        end:
+          type: number
+        text:
+          type: string
+    HomanBatchItem:
+      type: object
+      required: [id, source, start, end, text, language, audio_duration, processing_ms, segments]
+      properties:
+        id:
+          type: string
+        source:
+          type: string
+          enum: [microphone, system, legacy_mixed]
+        start:
+          type: number
+          description: Absolute start on this source's meeting timeline.
+        end:
+          type: number
+          description: Absolute end on this source's meeting timeline.
+        text:
+          type: string
+        language:
+          type: string
+        language_name:
+          type: string
+        audio_duration:
+          type: number
+        processing_ms:
+          type: number
+        segments:
+          type: array
+          description: Segment times are relative to this item.
+          items:
+            $ref: "#/components/schemas/TranscriptSegment"
+    HomanPackingMetrics:
+      type: object
+      required:
+        - enabled
+        - reel_count
+        - max_reel_seconds
+        - separator_seconds
+        - packed_audio_duration
+        - cross_item_segments
+        - fallback_item_count
+        - fallback_processing_ms
+      properties:
+        enabled:
+          const: true
+        reel_count:
+          type: integer
+        max_reel_seconds:
+          type: number
+        separator_seconds:
+          type: number
+        packed_audio_duration:
+          type: number
+        cross_item_segments:
+          type: integer
+        fallback_item_count:
+          type: integer
+        fallback_processing_ms:
+          type: number
+          description: Total summed inference work for repacked and isolated fallback.
+        fallback_repack_enabled:
+          type: boolean
+        fallback_repack_item_count:
+          type: integer
+        fallback_repack_reel_count:
+          type: integer
+        fallback_repack_separator_seconds:
+          type: number
+        fallback_repack_packed_audio_duration:
+          type: number
+        fallback_repack_cross_item_segments:
+          type: integer
+        fallback_repack_residual_item_count:
+          type: integer
+        fallback_repack_processing_ms:
+          type: number
+        fallback_isolated_item_count:
+          type: integer
+        fallback_isolated_processing_ms:
+          type: number
+    HomanBatchResponse:
+      type: object
+      required:
+        - schema_version
+        - request_id
+        - model
+        - language
+        - text
+        - audio_duration
+        - concurrency_requested
+        - concurrency_used
+        - decode_ms
+        - inference_wall_ms
+        - server_wall_ms
+        - packing
+        - items
+      properties:
+        schema_version:
+          const: 1
+        request_id:
+          type: string
+        model:
+          const: large-v3-turbo
+        language:
+          const: auto
+        text:
+          type: string
+        audio_duration:
+          type: number
+        concurrency_requested:
+          type: integer
+        concurrency_used:
+          type: integer
+        decode_concurrency_used:
+          type: integer
+        decode_ms:
+          type: number
+        inference_wall_ms:
+          type: number
+        summed_item_processing_ms:
+          type: number
+        summed_reel_processing_ms:
+          type: number
+        server_wall_ms:
+          type: number
+        packing:
+          $ref: "#/components/schemas/HomanPackingMetrics"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/HomanBatchItem"
